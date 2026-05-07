@@ -112,9 +112,3 @@ install_domain() {
         fi
     else
         USE_SSL=0
-        echo "ℹ️ 使用灵活 SSL，VPS 无需证书"
-        echo "ℹ️ 请在 Cloudflare 面板将 SSL 设置为灵活"
-        
-        # --- 修改部分：灵活模式现在也询问端口 ---
-        echo ""
-        read -p "📌 请输入 Nginx
