@@ -1,14 +1,25 @@
 #!/bin/bash
 
 # ======================================
-# 🚀 Nginx SSL 一键部署脚本（终极通用版）
+# 🚀 Nginx 自动部署脚本
 # ======================================
 
 set -e
 
 echo "======================================"
-echo "🚀 Nginx SSL 一键部署脚本（终极通用版）"
+echo "🚀 Nginx 自动部署脚本（完整/严格SSL & 灵活SSL + Cloudflare IP 白名单）"
 echo "======================================"
+
+# =========================
+# Cloudflare IP 列表
+# =========================
+CF_IPS_URL="https://www.cloudflare.com/ips-v4"
+CF_IPV6_URL="https://www.cloudflare.com/ips-v6"
+
+fetch_cf_ips() {
+    CF_IPS=$(curl -s $CF_IPS_URL)
+    CF_IPV6S=$(curl -s $CF_IPV6_URL)
+}
 
 # =========================
 # 检测系统是否已安装 Nginx
@@ -20,10 +31,10 @@ else
     echo "📦 检测到未安装 Nginx，正在安装..."
     if command -v apt >/dev/null 2>&1; then
         apt update
-        apt install -y nginx
+        apt install -y nginx curl
     elif command -v yum >/dev/null 2>&1; then
         yum install -y epel-release
-        yum install -y nginx
+        yum install -y nginx curl
     else
         echo "❌ 未检测到 apt 或 yum，无法自动安装 Nginx"
         exit 1
@@ -31,7 +42,7 @@ else
 fi
 
 # =========================
-# 检测是否有系统 Nginx 服务
+# 检测系统 nginx.service
 # =========================
 if systemctl list-units --all | grep -q 'nginx.service'; then
     USE_SYSTEMD=1
@@ -56,27 +67,48 @@ read -p "请输入选项 [1-4]: " ACTION
 # 安装 / 配置域名 SSL
 # =========================
 install_domain() {
-    echo "[1/4] 请输入域名和相关信息"
-    read -p "🌐 域名 (example.com): " DOMAIN
-    read -p "⚙️ 本地服务端口 (例如 8000): " LOCAL_PORT
+    fetch_cf_ips
 
-    # 创建证书目录
+    echo "[1/5] 请输入域名"
+    read -p "🌐 域名 (example.com): " DOMAIN
+
+    # Cloudflare Full/Strict 支持端口
+    CF_SSL_PORTS="443 2052 2053 2083 2087 2096 8443"
+
+    echo ""
+    echo "⚠️ Cloudflare 完整（严格）SSL 支持端口:"
+    echo "$CF_SSL_PORTS"
+    read -p "📌 VPS 是否能开放以上端口？(y/n): " OPEN_CF_PORTS
+
     SSL_DIR="/etc/nginx/ssl"
     mkdir -p "$SSL_DIR"
 
-    # 交互式粘贴证书
-    echo "📄 请输入 SSL 证书内容 (PEM 格式)，粘贴完毕后按 Ctrl+D 保存："
-    SSL_CERT="${SSL_DIR}/${DOMAIN}.crt"
-    cat > "$SSL_CERT"
-    echo "✅ 证书文件已生成: $SSL_CERT"
+    if [[ "$OPEN_CF_PORTS" =~ ^[Yy]$ ]]; then
+        USE_SSL=1
+        echo "ℹ️ 选择完整（严格）SSL模式"
+        echo "📄 请输入 SSL 证书内容 (PEM 格式)，粘贴完毕 Ctrl+D 保存："
+        SSL_CERT="${SSL_DIR}/${DOMAIN}.crt"
+        cat > "$SSL_CERT"
+        echo "✅ 证书文件已生成: $SSL_CERT"
 
-    # 交互式粘贴私钥
-    echo "🔒 请输入 SSL 私钥内容 (PEM 格式)，粘贴完毕后按 Ctrl+D 保存："
-    SSL_KEY="${SSL_DIR}/${DOMAIN}.key"
-    cat > "$SSL_KEY"
-    echo "✅ 私钥文件已生成: $SSL_KEY"
+        echo "🔒 请输入 SSL 私钥内容 (PEM 格式)，粘贴完毕 Ctrl+D 保存："
+        SSL_KEY="${SSL_DIR}/${DOMAIN}.key"
+        cat > "$SSL_KEY"
+        echo "✅ 私钥文件已生成: $SSL_KEY"
 
-    # Nginx 配置
+        echo "ℹ️ 请在 Cloudflare 面板将 SSL 设置为完整（严格）"
+    else
+        USE_SSL=0
+        echo "ℹ️ VPS 端口无法开放完整（严格）SSL，自动使用灵活SSL"
+        echo "ℹ️ 请在 Cloudflare 面板将 SSL 设置为灵活"
+    fi
+
+    # 再输入本地服务端口
+    read -p "⚙️ 本地服务端口 (例如 25551): " LOCAL_PORT
+
+    # =========================
+    # 生成 Nginx 配置
+    # =========================
     NGINX_CONF="/etc/nginx/sites-available/${DOMAIN}.conf"
 
     if [[ -f "$NGINX_CONF" ]]; then
@@ -98,15 +130,29 @@ install_domain() {
         esac
     fi
 
-    echo "[2/4] 正在生成 Nginx 配置..."
+    echo "[2/5] 正在生成 Nginx 配置..."
     cat > "$NGINX_CONF" <<EOF
+# Cloudflare IP 白名单
+EOF
+
+    # 添加 IPv4 白名单
+    for ip in $CF_IPS; do
+        echo "allow $ip;" >> "$NGINX_CONF"
+    done
+    # 添加 IPv6 白名单
+    for ip in $CF_IPV6S; do
+        echo "allow $ip;" >> "$NGINX_CONF"
+    done
+    echo "deny all;" >> "$NGINX_CONF"
+
+    if [[ $USE_SSL -eq 1 ]]; then
+        cat >> "$NGINX_CONF" <<EOF
 server {
     listen 443 ssl;
     server_name ${DOMAIN};
 
     ssl_certificate ${SSL_CERT};
     ssl_certificate_key ${SSL_KEY};
-
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
 
@@ -125,14 +171,30 @@ server {
     return 301 https://\$host\$request_uri;
 }
 EOF
+    else
+        cat >> "$NGINX_CONF" <<EOF
+server {
+    listen 80;
+    server_name ${DOMAIN};
+
+    location / {
+        proxy_pass http://127.0.0.1:${LOCAL_PORT};
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+    fi
 
     ln -sf "$NGINX_CONF" /etc/nginx/sites-enabled/
 
-    echo "[3/4] 检查配置..."
+    echo "[3/5] 检查配置..."
     nginx -t
 
     # =========================
-    # 管理服务
+    # 管理 systemd
     # =========================
     if [[ $USE_SYSTEMD -eq 1 ]]; then
         systemctl restart nginx
@@ -141,7 +203,7 @@ EOF
         echo "[ℹ️] 创建 nginx-custom.service..."
         cat > /etc/systemd/system/nginx-custom.service <<EOF
 [Unit]
-Description=Nginx Custom SSL Service
+Description=Nginx 中文 SSL + Cloudflare IP 白名单服务
 After=network.target
 
 [Service]
@@ -160,8 +222,14 @@ EOF
         systemctl restart nginx-custom
     fi
 
-    echo "[4/4] Nginx SSL 域名配置完成！"
-    echo "🌐 https://${DOMAIN}"
+    echo "[4/5] Nginx 配置完成！"
+    if [[ $USE_SSL -eq 1 ]]; then
+        echo "🌐 https://${DOMAIN} （完整/严格SSL）"
+    else
+        echo "🌐 http://${DOMAIN} （灵活SSL）"
+    fi
+
+    echo "[5/5] 注意：HTTP/HTTPS 端口已限制仅允许 Cloudflare IP 访问，请确保 Cloudflare 面板 SSL 设置与模式匹配"
 }
 
 # =========================
