@@ -58,18 +58,16 @@ install_domain() {
     SSL_DIR="/etc/nginx/ssl"
     mkdir -p "$SSL_DIR"
 
-    # 交互式输入证书
-    echo "📄 请输入 SSL 证书内容 (PEM 格式)，粘贴完直接回车："
-    read -r SSL_CERT_CONTENT
+    # 交互式粘贴证书
+    echo "📄 请输入 SSL 证书内容 (PEM 格式)，粘贴完毕后按 Ctrl+D 保存："
     SSL_CERT="${SSL_DIR}/${DOMAIN}.crt"
-    echo "$SSL_CERT_CONTENT" > "$SSL_CERT"
+    cat > "$SSL_CERT"
     echo "✅ 证书文件已生成: $SSL_CERT"
 
-    # 交互式输入私钥
-    echo "🔒 请输入 SSL 私钥内容 (PEM 格式)，粘贴完直接回车："
-    read -r SSL_KEY_CONTENT
+    # 交互式粘贴私钥
+    echo "🔒 请输入 SSL 私钥内容 (PEM 格式)，粘贴完毕后按 Ctrl+D 保存："
     SSL_KEY="${SSL_DIR}/${DOMAIN}.key"
-    echo "$SSL_KEY_CONTENT" > "$SSL_KEY"
+    cat > "$SSL_KEY"
     echo "✅ 私钥文件已生成: $SSL_KEY"
 
     NGINX_CONF="/etc/nginx/sites-available/${DOMAIN}.conf"
