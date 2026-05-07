@@ -127,7 +127,7 @@ install_domain() {
         read -p "📌 请输入 Nginx 监听端口（默认 80）: " LISTEN_PORT
         LISTEN_PORT=${LISTEN_PORT:-80}
         validate_port "$LISTEN_PORT"
-        
+
         echo "ℹ️ 请在 Cloudflare 面板将 SSL 设置为灵活"
         if [ "$LISTEN_PORT" != "80" ]; then
             echo "ℹ️ 由于监听端口非 80，请在 Cloudflare 面板配置 Origin Rules，将回源端口设置为 ${LISTEN_PORT}"
@@ -218,4 +218,141 @@ server {
     # Cloudflare IP 白名单（仅允许 Cloudflare 回源）
 EOF
         for ip in $CF_IPS; do
-            echo "    allow $ip;"
+            echo "    allow $ip;" >> "$NGINX_CONF"
+        done
+        for ip in $CF_IPV6S; do
+            echo "    allow $ip;" >> "$NGINX_CONF"
+        done
+        cat >> "$NGINX_CONF" <<EOF
+    deny all;
+
+    location / {
+        proxy_pass http://127.0.0.1:${LOCAL_PORT};
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+    fi
+
+    ln -sf "$NGINX_CONF" /etc/nginx/sites-enabled/
+
+    echo "[3/5] 检查配置..."
+    nginx -t
+
+    # =========================
+    # 管理 systemd
+    # =========================
+    if [[ $USE_SYSTEMD -eq 1 ]]; then
+        systemctl restart nginx
+        systemctl enable nginx
+    else
+        echo "[ℹ️] 创建 nginx-custom.service..."
+        cat > /etc/systemd/system/nginx-custom.service <<EOF
+[Unit]
+Description=Nginx 中文 SSL + Cloudflare IP 白名单服务
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/nginx -g 'daemon off;'
+ExecReload=/usr/sbin/nginx -s reload
+ExecStop=/usr/sbin/nginx -s quit
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload
+        systemctl enable nginx-custom
+        systemctl restart nginx-custom
+    fi
+
+    echo "[4/5] Nginx 配置完成！"
+    if [[ $USE_SSL -eq 1 ]]; then
+        echo "🌐 域名: https://${DOMAIN}"
+    else
+        echo "🌐 域名: http://${DOMAIN}（灵活 SSL）"
+    fi
+    echo "📌 Nginx 监听端口: ${LISTEN_PORT}"
+    echo "⚙️ 本地反代端口: ${LOCAL_PORT}"
+    if [ "$LISTEN_PORT" != "443" ] && [ "$USE_SSL" -eq 1 ]; then
+        echo "⚠️ 请确认 Cloudflare Origin Rules 已将回源端口设置为 ${LISTEN_PORT}"
+    fi
+    if [ "$LISTEN_PORT" != "80" ] && [ "$USE_SSL" -eq 0 ]; then
+        echo "⚠️ 请确认 Cloudflare Origin Rules 已将回源端口设置为 ${LISTEN_PORT}"
+    fi
+
+    echo "[5/5] 注意：端口已限制仅允许 Cloudflare IP 访问，请确保 Cloudflare 面板 SSL 设置与模式匹配"
+}
+
+# =========================
+# 卸载单个域名配置
+# =========================
+uninstall_domain() {
+    read -p "请输入要卸载的域名: " DOMAIN
+    NGINX_CONF="/etc/nginx/sites-available/${DOMAIN}.conf"
+
+    if [[ ! -f "$NGINX_CONF" ]]; then
+        echo "❌ 配置文件不存在: $NGINX_CONF"; exit 1
+    fi
+
+    echo "🧹 卸载域名配置..."
+    rm -v "$NGINX_CONF"
+    rm -vf "/etc/nginx/sites-enabled/${DOMAIN}.conf"
+
+    if [[ $USE_SYSTEMD -eq 1 ]]; then
+        systemctl restart nginx
+    else
+        systemctl restart nginx-custom
+    fi
+
+    echo "✅ ${DOMAIN} 配置已卸载！"
+}
+
+# =========================
+# 完全卸载 Nginx
+# =========================
+full_uninstall() {
+    echo "🧹 正在彻底卸载 Nginx..."
+
+    if [[ $USE_SYSTEMD -eq 1 ]]; then
+        systemctl stop nginx || true
+        systemctl disable nginx || true
+    else
+        systemctl stop nginx-custom || true
+        systemctl disable nginx-custom || true
+        [[ -f /etc/systemd/system/nginx-custom.service ]] && rm -v /etc/systemd/system/nginx-custom.service
+        systemctl daemon-reload
+    fi
+
+    echo "⏳ 删除所有域名配置和证书..."
+    rm -vf /etc/nginx/sites-available/*.conf
+    rm -vf /etc/nginx/sites-enabled/*.conf
+    rm -vf /etc/nginx/ssl/*.crt
+    rm -vf /etc/nginx/ssl/*.key
+
+    echo "⏳ 卸载 Nginx 软件包..."
+    if command -v apt >/dev/null 2>&1; then
+        apt remove -y nginx
+        apt autoremove -y
+    elif command -v yum >/dev/null 2>&1; then
+        yum remove -y nginx
+    fi
+
+    echo "✅ Nginx 已完全卸载！"
+}
+
+# =========================
+# 执行用户选择
+# =========================
+case $ACTION in
+    1) install_domain ;;
+    2) uninstall_domain ;;
+    3) full_uninstall ;;
+    4) echo "👋 已退出"; exit 0 ;;
+    *) echo "❌ 无效选项"; exit 1 ;;
+esac
