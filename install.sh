@@ -99,7 +99,7 @@ install_domain() {
         echo "   443  2053  2083  2087  2096  8443"
         echo "   也可使用其他任意端口，配合 Cloudflare Origin Rules 回源即可"
         echo ""
-        read -p "📌 请输入 Nginx 监听端口（即 Cloudflare 回源端口，例如 443、8443、55555）: " LISTEN_PORT
+        read -p "📌 请输入 Nginx 监听端口（即 Cloudflare 回源端口，例如 55555）: " LISTEN_PORT
         validate_port "$LISTEN_PORT"
 
         echo "📄 请输入 SSL 证书内容 (PEM 格式)，粘贴完毕 Ctrl+D 保存："
@@ -124,7 +124,7 @@ install_domain() {
         echo "   80, 8080, 8880, 2052, 2082, 2086, 2095"
         echo "ℹ️ 也可使用任意端口，配合 Cloudflare Origin Rules 回源即可"
         echo ""
-        read -p "📌 请输入 Nginx 监听端口（默认 80）: " LISTEN_PORT
+        read -p "📌 请输入 Nginx 监听端口（默认 80）（即 Cloudflare 回源端口，例如 55555）: " LISTEN_PORT
         LISTEN_PORT=${LISTEN_PORT:-80}
         validate_port "$LISTEN_PORT"
 
