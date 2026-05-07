@@ -64,6 +64,17 @@ echo "4) 退出"
 read -p "请输入选项 [1-4]: " ACTION
 
 # =========================
+# 端口合法性校验函数
+# =========================
+validate_port() {
+    local port=$1
+    if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+        echo "❌ 端口无效，必须为 1-65535 之间的数字"
+        exit 1
+    fi
+}
+
+# =========================
 # 安装 / 配置域名 SSL
 # =========================
 install_domain() {
@@ -89,12 +100,7 @@ install_domain() {
         echo "   也可使用其他任意端口，配合 Cloudflare Origin Rules 回源即可"
         echo ""
         read -p "📌 请输入 Nginx 监听端口（即 Cloudflare 回源端口，例如 443、8443、55555）: " LISTEN_PORT
-
-        # 验证端口范围
-        if ! [[ "$LISTEN_PORT" =~ ^[0-9]+$ ]] || [ "$LISTEN_PORT" -lt 1 ] || [ "$LISTEN_PORT" -gt 65535 ]; then
-            echo "❌ 端口无效，必须为 1-65535 之间的数字"
-            exit 1
-        fi
+        validate_port "$LISTEN_PORT"
 
         echo "📄 请输入 SSL 证书内容 (PEM 格式)，粘贴完毕 Ctrl+D 保存："
         SSL_CERT="${SSL_DIR}/${DOMAIN}.crt"
@@ -110,5 +116,106 @@ install_domain() {
         if [ "$LISTEN_PORT" != "443" ]; then
             echo "ℹ️ 由于监听端口非 443，请在 Cloudflare 面板配置 Origin Rules，将回源端口设置为 ${LISTEN_PORT}"
         fi
+
     else
         USE_SSL=0
+        echo ""
+        echo "ℹ️ Cloudflare 灵活 SSL 回源支持的常用端口:"
+        echo "   80, 8080, 8880, 2052, 2082, 2086, 2095"
+        echo "ℹ️ 也可使用任意端口，配合 Cloudflare Origin Rules 回源即可"
+        echo ""
+        read -p "📌 请输入 Nginx 监听端口（默认 80）: " LISTEN_PORT
+        LISTEN_PORT=${LISTEN_PORT:-80}
+        validate_port "$LISTEN_PORT"
+        
+        echo "ℹ️ 请在 Cloudflare 面板将 SSL 设置为灵活"
+        if [ "$LISTEN_PORT" != "80" ]; then
+            echo "ℹ️ 由于监听端口非 80，请在 Cloudflare 面板配置 Origin Rules，将回源端口设置为 ${LISTEN_PORT}"
+        fi
+    fi
+
+    # 本地服务端口
+    read -p "⚙️ 本地服务端口（Nginx 反代到本机的端口，例如 3000、8080）: " LOCAL_PORT
+    validate_port "$LOCAL_PORT"
+
+    # =========================
+    # 生成 Nginx 配置
+    # =========================
+    NGINX_CONF="/etc/nginx/sites-available/${DOMAIN}.conf"
+
+    if [[ -f "$NGINX_CONF" ]]; then
+        echo "⚠️ 已存在配置文件: $NGINX_CONF"
+        echo "请选择操作："
+        echo "1) 覆盖旧配置"
+        echo "2) 备份旧配置再安装"
+        echo "3) 退出"
+        read -p "请输入选项: " EXIST_ACTION
+        case "$EXIST_ACTION" in
+            1) echo "🔄 覆盖旧配置..." ;;
+            2)
+                BACKUP_CONF="${NGINX_CONF}.$(date +%Y%m%d%H%M%S).bak"
+                cp "$NGINX_CONF" "$BACKUP_CONF"
+                echo "📦 已备份旧配置到: $BACKUP_CONF"
+                ;;
+            3) echo "👋 已退出"; exit 0 ;;
+            *) echo "❌ 无效选项"; exit 1 ;;
+        esac
+    fi
+
+    echo "[2/5] 正在生成 Nginx 配置..."
+
+    if [[ $USE_SSL -eq 1 ]]; then
+        # ---- 完整/严格 SSL 配置 ----
+        cat > "$NGINX_CONF" <<EOF
+server {
+    listen ${LISTEN_PORT} ssl;
+    server_name ${DOMAIN};
+
+    ssl_certificate ${SSL_CERT};
+    ssl_certificate_key ${SSL_KEY};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+
+    # Cloudflare IP 白名单（仅允许 Cloudflare 回源）
+EOF
+        for ip in $CF_IPS; do
+            echo "    allow $ip;" >> "$NGINX_CONF"
+        done
+        for ip in $CF_IPV6S; do
+            echo "    allow $ip;" >> "$NGINX_CONF"
+        done
+        cat >> "$NGINX_CONF" <<EOF
+    deny all;
+
+    location / {
+        proxy_pass http://127.0.0.1:${LOCAL_PORT};
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+        # 监听端口不是 80 时，额外添加 80 跳转
+        if [ "$LISTEN_PORT" != "80" ]; then
+            cat >> "$NGINX_CONF" <<EOF
+
+server {
+    listen 80;
+    server_name ${DOMAIN};
+    return 301 https://\$host\$request_uri;
+}
+EOF
+        fi
+
+    else
+        # ---- 灵活 SSL 配置（HTTP，自定义端口） ----
+        cat > "$NGINX_CONF" <<EOF
+server {
+    listen ${LISTEN_PORT};
+    server_name ${DOMAIN};
+
+    # Cloudflare IP 白名单（仅允许 Cloudflare 回源）
+EOF
+        for ip in $CF_IPS; do
+            echo "    allow $ip;"
