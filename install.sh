@@ -1,38 +1,44 @@
 #!/bin/bash
 
 # ======================================
-# 🚀 Nginx SSL 一键部署脚本（升级版）
-# 💡 特点：
-# - 交互式输入域名、证书、私钥、本地端口
-# - 自动生成 Nginx 配置
-# - 支持卸载域名配置 / 完全卸载 Nginx
-# - 覆盖安装 / 备份旧配置
-# - systemd 守护 + 开机自启
+# 🚀 Nginx SSL 一键部署脚本（终极通用版）
 # ======================================
 
 set -e
 
 echo "======================================"
-echo "🚀 Nginx SSL 一键部署脚本（升级版）"
+echo "🚀 Nginx SSL 一键部署脚本（终极通用版）"
 echo "======================================"
 
 # =========================
-# 检测是否已安装 Nginx
+# 检测系统是否已安装 Nginx
 # =========================
 if command -v nginx >/dev/null 2>&1; then
     echo "⚠️ 已安装 Nginx"
     nginx -v
-    echo "📌 已存在配置的域名和端口："
-    for f in /etc/nginx/sites-available/*.conf; do
-        [[ -f "$f" ]] || continue
-        DOMAIN=$(grep -m1 'server_name' "$f" | awk '{print $2}' | tr -d ';')
-        PORT=$(grep -m1 'proxy_pass' "$f" | awk -F':' '{print $NF}' | tr -d ';')
-        echo "   🌐 $DOMAIN -> 本地端口: $PORT"
-    done
 else
     echo "📦 检测到未安装 Nginx，正在安装..."
-    apt update
-    apt install -y nginx
+    if command -v apt >/dev/null 2>&1; then
+        apt update
+        apt install -y nginx
+    elif command -v yum >/dev/null 2>&1; then
+        yum install -y epel-release
+        yum install -y nginx
+    else
+        echo "❌ 未检测到 apt 或 yum，无法自动安装 Nginx"
+        exit 1
+    fi
+fi
+
+# =========================
+# 检测是否有系统 Nginx 服务
+# =========================
+if systemctl list-units --all | grep -q 'nginx.service'; then
+    USE_SYSTEMD=1
+    echo "ℹ️ 使用系统自带 nginx.service"
+else
+    USE_SYSTEMD=0
+    echo "ℹ️ 系统未提供 nginx.service，将创建自定义 nginx-custom.service"
 fi
 
 # =========================
@@ -70,9 +76,9 @@ install_domain() {
     cat > "$SSL_KEY"
     echo "✅ 私钥文件已生成: $SSL_KEY"
 
+    # Nginx 配置
     NGINX_CONF="/etc/nginx/sites-available/${DOMAIN}.conf"
 
-    # 检查已有配置
     if [[ -f "$NGINX_CONF" ]]; then
         echo "⚠️ 已存在配置文件: $NGINX_CONF"
         echo "请选择操作："
@@ -121,17 +127,26 @@ server {
 EOF
 
     ln -sf "$NGINX_CONF" /etc/nginx/sites-enabled/
+
+    echo "[3/4] 检查配置..."
     nginx -t
 
-    echo "[3/4] 创建 systemd 服务..."
-    cat > /etc/systemd/system/nginx-custom.service <<EOF
+    # =========================
+    # 管理服务
+    # =========================
+    if [[ $USE_SYSTEMD -eq 1 ]]; then
+        systemctl restart nginx
+        systemctl enable nginx
+    else
+        echo "[ℹ️] 创建 nginx-custom.service..."
+        cat > /etc/systemd/system/nginx-custom.service <<EOF
 [Unit]
 Description=Nginx Custom SSL Service
 After=network.target
 
 [Service]
-Type=forking
-ExecStart=/usr/sbin/nginx
+Type=simple
+ExecStart=/usr/sbin/nginx -g 'daemon off;'
 ExecReload=/usr/sbin/nginx -s reload
 ExecStop=/usr/sbin/nginx -s quit
 Restart=always
@@ -140,17 +155,17 @@ RestartSec=5s
 [Install]
 WantedBy=multi-user.target
 EOF
-
-    systemctl daemon-reload
-    systemctl enable nginx-custom
-    systemctl restart nginx-custom
+        systemctl daemon-reload
+        systemctl enable nginx-custom
+        systemctl restart nginx-custom
+    fi
 
     echo "[4/4] Nginx SSL 域名配置完成！"
     echo "🌐 https://${DOMAIN}"
 }
 
 # =========================
-# 卸载某个域名配置
+# 卸载单个域名配置
 # =========================
 uninstall_domain() {
     read -p "请输入要卸载的域名: " DOMAIN
@@ -163,7 +178,13 @@ uninstall_domain() {
     echo "🧹 卸载域名配置..."
     rm -v "$NGINX_CONF"
     rm -v "/etc/nginx/sites-enabled/${DOMAIN}.conf"
-    systemctl restart nginx-custom
+
+    if [[ $USE_SYSTEMD -eq 1 ]]; then
+        systemctl restart nginx
+    else
+        systemctl restart nginx-custom
+    fi
+
     echo "✅ ${DOMAIN} 配置已卸载！"
 }
 
@@ -172,24 +193,30 @@ uninstall_domain() {
 # =========================
 full_uninstall() {
     echo "🧹 正在彻底卸载 Nginx..."
-    systemctl stop nginx-custom 2>/dev/null || true
-    systemctl disable nginx-custom 2>/dev/null || true
 
-    echo "⏳ 删除所有域名配置..."
-    rm -vf /etc/nginx/sites-available/*.conf
-    rm -vf /etc/nginx/sites-enabled/*.conf
-
-    if [[ -f /etc/systemd/system/nginx-custom.service ]]; then
-        echo "⏳ 删除 systemd 服务文件..."
-        rm -v /etc/systemd/system/nginx-custom.service
+    if [[ $USE_SYSTEMD -eq 1 ]]; then
+        systemctl stop nginx || true
+        systemctl disable nginx || true
+    else
+        systemctl stop nginx-custom || true
+        systemctl disable nginx-custom || true
+        [[ -f /etc/systemd/system/nginx-custom.service ]] && rm -v /etc/systemd/system/nginx-custom.service
+        systemctl daemon-reload
     fi
 
-    echo "⏳ 卸载 Nginx 软件包..."
-    apt remove -y nginx
-    apt autoremove -y
+    echo "⏳ 删除所有域名配置和证书..."
+    rm -vf /etc/nginx/sites-available/*.conf
+    rm -vf /etc/nginx/sites-enabled/*.conf
+    rm -vf /etc/nginx/ssl/*.crt
+    rm -vf /etc/nginx/ssl/*.key
 
-    echo "⏳ 重新加载 systemd..."
-    systemctl daemon-reexec
+    echo "⏳ 卸载 Nginx 软件包..."
+    if command -v apt >/dev/null 2>&1; then
+        apt remove -y nginx
+        apt autoremove -y
+    elif command -v yum >/dev/null 2>&1; then
+        yum remove -y nginx
+    fi
 
     echo "✅ Nginx 已完全卸载！"
 }
