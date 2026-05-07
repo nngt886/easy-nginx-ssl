@@ -9,4 +9,4 @@
 · 覆盖安装 / 备份旧配置  
 · 支持多架构（x86_64 / ARM64）  
 ```bash
-bash <(curl -fSL [https://raw.githubusercontent.com/nngt886/easy-nginx-ssl/refs/heads/main/install.sh]
+bash <(curl -fSL https://raw.githubusercontent.com/nngt886/easy-nginx-ssl/refs/heads/main/install.sh)
